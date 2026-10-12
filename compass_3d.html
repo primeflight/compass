@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PFD — HMC5883L</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0a0a0f;color:#eee;font-family:system-ui;
+       display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:16px}
+  h1{font-size:16px;color:#4cf;margin-bottom:8px;letter-spacing:2px;font-weight:600}
+  #status{display:flex;align-items:center;gap:6px;margin-bottom:12px;font-size:12px;color:#889}
+  #dot{width:8px;height:8px;border-radius:50%;background:#fa5;transition:all .3s}
+  #dot.ok{background:#4f4;box-shadow:0 0 6px #4f4}
+  #dot.erro{background:#f44;box-shadow:0 0 6px #f44}
+  #container{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;justify-content:center}
+  #pfd{background:#000;border-radius:6px;box-shadow:0 0 20px #4cf2}
+  #dados{background:#111;padding:14px;border-radius:8px;min-width:180px;border:1px solid #222}
+  #h{font-size:32px;font-weight:700;color:#4cf;font-family:monospace}
+  #dir{font-size:18px;color:#fa5;margin:4px 0}
+  .lbl{color:#889;font-size:11px;margin:3px 0}
+  .valor{color:#eee;font-family:monospace}
+  button{background:#4cf;color:#000;border:0;padding:6px 14px;border-radius:5px;
+         font-size:12px;cursor:pointer;margin-top:8px;font-weight:600}
+  button:hover{background:#6df}
+</style>
+</head>
+<body>
+<h1>PRIMARY FLIGHT DISPLAY</h1>
+<div id="status"><div id="dot"></div><span id="txt">Disconnected</span></div>
+<div id="container">
+  <canvas id="pfd" width="400" height="400"></canvas>
+  <div id="dados">
+    <div id="h">---.-°</div>
+    <div id="dir">--</div>
+    <div class="lbl">X: <span class="valor" id="x">--</span></div>
+    <div class="lbl">Y: <span class="valor" id="y">--</span></div>
+    <div class="lbl">Z: <span class="valor" id="z">--</span></div>
+    <div class="lbl">Field: <span class="valor" id="m">--</span> mG</div>
+    <button id="btn">Connect</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script>
+const cv = document.getElementById('pfd');
+const renderer = new THREE.WebGLRenderer({canvas: cv, antialias: true});
+renderer.setSize(400, 400);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a0f);
+
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+camera.position.set(0, 0, 5);
+
+// Lighting
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+const dl = new THREE.DirectionalLight(0xffffff, 0.8);
+dl.position.set(2, 3, 4);
+scene.add(dl);
+
+// === ATTITUDE INDICATOR (horizonte artificial) ===
+// Sky (upper hemisphere)
+const skyGeo = new THREE.SphereGeometry(2.5, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+const skyMat = new THREE.MeshBasicMaterial({ color: 0x1a5f9e, side: THREE.BackSide });
+const sky = new THREE.Mesh(skyGeo, skyMat);
+scene.add(sky);
+
+// Ground (lower hemisphere)
+const gndGeo = new THREE.SphereGeometry(2.5, 32, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+const gndMat = new THREE.MeshBasicMaterial({ color: 0x8b4513, side: THREE.BackSide });
+const ground = new THREE.Mesh(gndGeo, gndMat);
+scene.add(ground);
+
+// Horizon line
+const horizonGeo = new THREE.RingGeometry(2.45, 2.5, 32);
+const horizonMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+const horizon = new THREE.Mesh(horizonGeo, horizonMat);
+horizon.rotation.x = Math.PI / 2;
+scene.add(horizon);
+
+// === AIRCRAFT SYMBOL (fixed, center) ===
+const aircraftGroup = new THREE.Group();
+
+// Wings
+const wingGeo = new THREE.BoxGeometry(1.8, 0.06, 0.25);
+const wingMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+const wings = new THREE.Mesh(wingGeo, wingMat);
+aircraftGroup.add(wings);
+
+// Fuselage
+const fusGeo = new THREE.BoxGeometry(0.12, 0.12, 0.6);
+const fus = new THREE.Mesh(fusGeo, wingMat);
+aircraftGroup.add(fus);
+
+// Tail
+const tailGeo = new THREE.BoxGeometry(0.4, 0.05, 0.15);
+const tail = new THREE.Mesh(tailGeo, wingMat);
+tail.position.set(0, 0.12, -0.28);
+aircraftGroup.add(tail);
+
+scene.add(aircraftGroup);
+
+// === HEADING TAPE (fita de rumo na base) ===
+const tapeGroup = new THREE.Group();
+tapeGroup.position.set(0, -1.6, 0);
+
+// Tape background
+const tapeBgGeo = new THREE.PlaneGeometry(3, 0.5);
+const tapeBgMat = new THREE.MeshBasicMaterial({ color: 0x111111, side: THREE.DoubleSide });
+const tapeBg = new THREE.Mesh(tapeBgGeo, tapeBgMat);
+tapeGroup.add(tapeBg);
+
+// Tape line
+const tapeLineGeo = new THREE.PlaneGeometry(3, 0.02);
+const tapeLineMat = new THREE.MeshBasicMaterial({ color: 0x44ccff, side: THREE.DoubleSide });
+const tapeLine = new THREE.Mesh(tapeLineGeo, tapeLineMat);
+tapeLine.position.z = 0.01;
+tapeGroup.add(tapeLine);
+
+// Heading markers (N, E, S, W)
+const cardinals = ['N', 'E', 'S', 'W'];
+const markers = [];
+cardinals.forEach((c, i) => {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 48;
+  const g = canvas.getContext('2d');
+  g.fillStyle = '#4cf';
+  g.font = 'bold 32px system-ui';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(c, 24, 24);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas) }));
+  sprite.scale.set(0.35, 0.35, 1);
+  sprite.position.set((i - 1.5) * 0.8, 0, 0.02);
+  tapeGroup.add(sprite);
+  markers.push(sprite);
+});
+
+scene.add(tapeGroup);
+
+// === SKY POINTER (triângulo branco no topo) ===
+const pointerGeo = new THREE.ConeGeometry(0.12, 0.3, 3);
+const pointerMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const pointer = new THREE.Mesh(pointerGeo, pointerMat);
+pointer.position.set(0, 1.9, 0);
+pointer.rotation.z = Math.PI;
+scene.add(pointer);
+
+// === BANK ANGLE SCALE (escala de inclinação) ===
+const bankGroup = new THREE.Group();
+for (let i = -3; i <= 3; i++) {
+  const tickGeo = new THREE.PlaneGeometry(0.02, i === 0 ? 0.25 : 0.12);
+  const tickMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+  const tick = new THREE.Mesh(tickGeo, tickMat);
+  const angle = i * 15 * Math.PI / 180;
+  tick.position.set(Math.sin(angle) * 2.2, Math.cos(angle) * 2.2, 0);
+  tick.rotation.z = -angle;
+  bankGroup.add(tick);
+}
+scene.add(bankGroup);
+
+let port = null, reader = null;
+let targetHeading = 0, currentHeading = 0;
+let targetPitch = 0, currentPitch = 0;
+
+function draw(h, pitch) {
+  targetHeading = h;
+  targetPitch = pitch || 0;
+
+  // Smooth interpolation
+  let diff = targetHeading - currentHeading;
+  while (diff > 180) diff -= 360;
+  while (diff < -180) diff += 360;
+  currentHeading += diff * 0.08;
+  currentPitch += (targetPitch - currentPitch) * 0.08;
+
+  // Rotate attitude indicator (sky/ground) based on heading
+  sky.rotation.y = -currentHeading * Math.PI / 180;
+  ground.rotation.y = -currentHeading * Math.PI / 180;
+  horizon.rotation.z = -currentHeading * Math.PI / 180;
+
+  // Pitch (subida/descida) - move horizon up/down
+  const pitchOffset = currentPitch * 0.5;
+  sky.position.y = -pitchOffset;
+  ground.position.y = -pitchOffset;
+  horizon.position.y = -pitchOffset;
+
+  // Rotate heading tape
+  tapeGroup.rotation.z = -currentHeading * Math.PI / 180;
+
+  // Move heading markers
+  markers.forEach((m, i) => {
+    const baseAngle = i * 90;
+    const relAngle = ((baseAngle - currentHeading + 540) % 360) - 180;
+    m.position.x = relAngle * 0.008;
+    m.material.opacity = Math.abs(relAngle) > 60 ? 0.3 : 1;
+  });
+
+  renderer.render(scene, camera);
+}
+
+async function conectar() {
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 9600 });
+    document.getElementById('dot').className = 'ok';
+    document.getElementById('txt').textContent = 'Connected';
+    document.getElementById('btn').textContent = 'Disconnect';
+    lerDados();
+  } catch (e) {
+    document.getElementById('dot').className = 'erro';
+    document.getElementById('txt').textContent = 'Error: ' + e.message;
+  }
+}
+
+async function lerDados() {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (port.readable) {
+    reader = port.readable.getReader();
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value);
+        let idx;
+        while ((idx = buffer.indexOf('\n')) >= 0) {
+          const linha = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 1);
+          if (linha.startsWith('{')) {
+            try {
+              const d = JSON.parse(linha);
+              // Calculate pitch from Z axis (simplified)
+              const pitch = Math.atan2(d.z, Math.sqrt(d.x*d.x + d.y*d.y)) * 180 / Math.PI;
+              draw(d.h, pitch);
+              document.getElementById('h').textContent = d.h.toFixed(1) + '°';
+              document.getElementById('dir').textContent = dirs[Math.round(d.h/45) % 8];
+              document.getElementById('x').textContent = d.x;
+              document.getElementById('y').textContent = d.y;
+              document.getElementById('z').textContent = d.z;
+              document.getElementById('m').textContent = d.m;
+            } catch(e) {}
+          }
+        }
+      }
+    } catch(e) {} finally { reader.releaseLock(); }
+  }
+}
+
+const dirs = ['N','NE','E','SE','S','SW','W','NW'];
+
+document.getElementById('btn').onclick = async () => {
+  if (port) {
+    if (reader) await reader.cancel();
+    await port.close();
+    port = null;
+    document.getElementById('dot').className = '';
+    document.getElementById('txt').textContent = 'Disconnected';
+    document.getElementById('btn').textContent = 'Connect';
+  } else {
+    conectar();
+  }
+};
+
+// Initial render
+draw(0, 0);
+</script>
+</body>
+</html>

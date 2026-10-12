@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HSI - HMC5883L</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#0a0a0f;color:#eee;font-family:system-ui;
+       display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:16px}
+  h1{font-size:18px;color:#4cf;margin:0 0 12px;letter-spacing:2px}
+  #status{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:13px;color:#889}
+  #dot{width:10px;height:10px;border-radius:50%;background:#fa5;transition:background .3s}
+  #dot.ok{background:#4f4;box-shadow:0 0 8px #4f4}
+  #dot.erro{background:#f44;box-shadow:0 0 8px #f44}
+  #container{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap;justify-content:center}
+  #hsi{background:#000;border-radius:8px;box-shadow:0 0 30px #4cf2,inset 0 0 60px #000}
+  #dados{background:#111;padding:16px;border-radius:10px;min-width:200px;border:1px solid #333}
+  #h{font-size:38px;font-weight:700;color:#4cf;font-family:monospace}
+  #dir{font-size:20px;color:#fa5;margin:6px 0}
+  .lbl{color:#889;font-size:12px;margin:4px 0}
+  .valor{color:#eee;font-family:monospace}
+  button{background:#4cf;color:#000;border:0;padding:8px 16px;border-radius:6px;
+         font-size:13px;cursor:pointer;margin-top:10px;font-weight:600}
+  button:hover{background:#6df}
+</style>
+</head>
+<body>
+<h1>🛩️ HSI — HMC5883L</h1>
+<div id="status"><div id="dot"></div><span id="txt">Desconectado</span></div>
+<div id="container">
+  <canvas id="hsi" width="360" height="360"></canvas>
+  <div id="dados">
+    <div id="h">---.-°</div>
+    <div id="dir">--</div>
+    <div class="lbl">X: <span class="valor" id="x">--</span></div>
+    <div class="lbl">Y: <span class="valor" id="y">--</span></div>
+    <div class="lbl">Z: <span class="valor" id="z">--</span></div>
+    <div class="lbl">Campo: <span class="valor" id="m">--</span> mG</div>
+    <button id="btn">Conectar</button>
+  </div>
+</div>
+
+<script>
+const cv = document.getElementById('hsi'), ctx = cv.getContext('2d');
+const cx = 180, cy = 180, r = 150;
+const dirs = ['N','NE','L','SE','S','SO','O','NO'];
+let port = null, reader = null;
+
+function draw(h) {
+  ctx.clearRect(0, 0, 360, 360);
+
+  // bezel externo
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 8;
+  ctx.beginPath(); ctx.arc(cx, cy, r+10, 0, 7); ctx.stroke();
+  ctx.strokeStyle = '#4cf'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(cx, cy, r+6, 0, 7); ctx.stroke();
+
+  // rosa dos ventos (gira com o rumo)
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(-h * Math.PI/180);
+
+  // circulo interno
+  ctx.strokeStyle = '#4cf'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(0, 0, r-20, 0, 7); ctx.stroke();
+
+  // ticks e numeros
+  for (let i = 0; i < 72; i++) {
+    const a = i * 5 * Math.PI/180;
+    const isCard = i % 18 === 0;
+    const isNum = i % 9 === 0;
+    ctx.strokeStyle = isCard ? '#4cf' : '#556';
+    ctx.lineWidth = isCard ? 3 : 1;
+    const len = isCard ? 20 : (isNum ? 14 : 8);
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a)*(r-20-len), Math.sin(a)*(r-20-len));
+    ctx.lineTo(Math.cos(a)*(r-20), Math.sin(a)*(r-20));
+    ctx.stroke();
+  }
+
+  // letras cardeais
+  ctx.fillStyle = '#4cf'; ctx.font = 'bold 24px system-ui';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 8; i++) {
+    const a = i * 45 * Math.PI/180;
+    ctx.fillText(dirs[i], Math.cos(a)*(r-55), Math.sin(a)*(r-55));
+  }
+
+  // numeros a cada 30 graus
+  ctx.fillStyle = '#889'; ctx.font = '14px monospace';
+  for (let i = 0; i < 12; i++) {
+    const a = i * 30 * Math.PI/180;
+    const num = i * 3;
+    ctx.fillText(num.toString(), Math.cos(a)*(r-85), Math.sin(a)*(r-85));
+  }
+
+  ctx.restore();
+
+  // lubber line (fixa, aponta para cima)
+  ctx.fillStyle = '#f33';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r + 5);
+  ctx.lineTo(cx - 10, cy - r + 25);
+  ctx.lineTo(cx + 10, cy - r + 25);
+  ctx.closePath(); ctx.fill();
+
+  // heading bug (amarelo, fixo no rumo atual)
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(-h * Math.PI/180);
+  ctx.fillStyle = '#fa5';
+  ctx.beginPath();
+  ctx.moveTo(0, -r + 30);
+  ctx.lineTo(-8, -r + 45);
+  ctx.lineTo(8, -r + 45);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  // centro
+  ctx.fillStyle = '#4cf';
+  ctx.beginPath(); ctx.arc(cx, cy, 6, 0, 7); ctx.fill();
+
+  // digital readout no centro
+  ctx.fillStyle = '#000'; ctx.fillRect(cx-45, cy-18, 90, 36);
+  ctx.strokeStyle = '#4cf'; ctx.lineWidth = 1; ctx.strokeRect(cx-45, cy-18, 90, 36);
+  ctx.fillStyle = '#4cf'; ctx.font = 'bold 22px monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(h.toFixed(0).padStart(3,'0') + '°', cx, cy);
+}
+
+async function conectar() {
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 9600 });
+    document.getElementById('dot').className = 'ok';
+    document.getElementById('txt').textContent = 'Conectado';
+    document.getElementById('btn').textContent = 'Desconectar';
+    lerDados();
+  } catch (e) {
+    document.getElementById('dot').className = 'erro';
+    document.getElementById('txt').textContent = 'Erro: ' + e.message;
+  }
+}
+
+async function lerDados() {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (port.readable) {
+    reader = port.readable.getReader();
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value);
+        let idx;
+        while ((idx = buffer.indexOf('\n')) >= 0) {
+          const linha = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 1);
+          if (linha.startsWith('{')) {
+            try {
+              const d = JSON.parse(linha);
+              draw(d.h);
+              document.getElementById('h').textContent = d.h.toFixed(1) + '°';
+              document.getElementById('dir').textContent = dirs[Math.round(d.h/45) % 8];
+              document.getElementById('x').textContent = d.x;
+              document.getElementById('y').textContent = d.y;
+              document.getElementById('z').textContent = d.z;
+              document.getElementById('m').textContent = d.m;
+            } catch(e) {}
+          }
+        }
+      }
+    } catch(e) {} finally { reader.releaseLock(); }
+  }
+}
+
+document.getElementById('btn').onclick = async () => {
+  if (port) {
+    if (reader) await reader.cancel();
+    await port.close();
+    port = null;
+    document.getElementById('dot').className = '';
+    document.getElementById('txt').textContent = 'Desconectado';
+    document.getElementById('btn').textContent = 'Conectar';
+  } else {
+    conectar();
+  }
+};
+
+draw(0);
+</script>
+</body>
+</html>
